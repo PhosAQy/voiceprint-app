@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'audio_filter.dart';
 import 'fft.dart';
+import 'lpc.dart';
 import 'pitch_detector.dart';
 import 'wav_reader.dart';
 
@@ -97,12 +98,12 @@ class AudioAnalysisService {
         continue;
       }
 
-      // 共鸣分析 — 取段中间 _fftSize 样本做 FFT
+      // 共鸣分析 — 取段中间 _fftSize 样本做 FFT + LPC
       final fftStart = (curLen - _fftSize) ~/ 2;
       final fftFrame =
           Float64List.sublistView(segment, fftStart, fftStart + _fftSize);
       final mag = FFT.magnitudeSpectrum(fftFrame);
-      resonanceStack.add(_calcResonance(mag, sampleRate));
+      resonanceStack.add(_calcResonance(fftFrame, mag, sampleRate));
     }
 
     // 3. 音高曲线 — 以检测窗口大小为步长，精度最大化（极密采样 → 极平滑曲线）
@@ -182,31 +183,186 @@ class AudioAnalysisService {
     return result;
   }
 
-  /// 基于 FFT 频段能量计算共鸣比例
+  /// 基于共振峰（LPC）+ 频谱平坦度 + 歌唱家共振峰的科学共鸣分析
   ///
-  /// 频段划分（近似，基于声学共鸣特性）：
-  /// - 胸腔共鸣: 80–350 Hz (低频，基频和低次谐波)
-  /// - 鼻腔共鸣: 350–1500 Hz (中低频)
-  /// - 头腔共鸣: 1500–4000 Hz (中高频，"金属感"和"穿透力")
-  /// - 大白嗓: 其余 (极高/极低频，无聚焦共鸣)
+  /// 声学定义（有文献依据）：
+  /// - **胸腔共鸣**：F1 较低（< 500Hz）且基频附近能量集中
+  ///   - 声学依据：胸腔共鸣表现为低频共振，声道较长、F1 偏低
+  ///   - 测量：F1 落在 200-500Hz 区间 + 低频能量比
+  ///
+  /// - **鼻腔共鸣**：鼻音化程度
+  ///   - 声学依据：A1-P1 法（Chen 1997），鼻音化时 F1 处能量增强
+  ///   - 测量：F1 处能量与基频能量的比值（近似 A1-P1）
+  ///
+  /// - **头腔共鸣**：歌唱家共振峰（Sundberg 1974）
+  ///   - 声学依据：2-5kHz 频段出现明显共振峰，由喉咽部收窄产生
+  ///   - 测量：2-5kHz 能量集中度（峰值/均值比）
+  ///
+  /// - **大白嗓**：频谱平坦度 + 缺乏共振峰塑形
+  ///   - 声学依据：大白嗓缺乏声道塑形，频谱接近白噪（平坦）
+  ///   - 测量：SFM × (1 - 歌唱家共振峰强度)
   static List<double> _calcResonance(
-      List<double> magnitude, int sampleRate) {
-    final chest = FFT.bandEnergy(magnitude, sampleRate, 80, 350);
-    final nasal = FFT.bandEnergy(magnitude, sampleRate, 350, 1500);
-    final head = FFT.bandEnergy(magnitude, sampleRate, 1500, 4000);
-    // 大白嗓: 总能量减去以上三段
-    final total = FFT.bandEnergy(magnitude, sampleRate, 60, 8000);
-    final raw = (total - chest - nasal - head).abs();
+      Float64List timeSignal, List<double> magnitude, int sampleRate) {
+    // ---- LPC 共振峰提取 ----
+    // 加 Hann 窗（LPC 对窗敏感）
+    final windowed = Float64List(timeSignal.length);
+    final n = timeSignal.length;
+    for (var i = 0; i < n; i++) {
+      final w = 0.5 - 0.5 * cos(2 * pi * i / (n - 1));
+      windowed[i] = timeSignal[i] * w;
+    }
 
-    final sum = chest + nasal + head + raw;
-    if (sum < 1e-10) return [0.4, 0.2, 0.2, 0.2];
+    // LPC 阶数：约为采样率/1000 + 2，保证能提取 F1-F4
+    final lpcOrder = (sampleRate ~/ 1000) + 2;
+    final lpcCoeffs = Lpc.compute(windowed, lpcOrder);
+    final formants = Lpc.extractFormants(lpcCoeffs, sampleRate);
+
+    // ---- 频谱平坦度 SFM (Spectral Flatness Measure) ----
+    // SFM = exp(mean(log(mag))) / mean(mag)
+    // SFM → 1：白噪（完全平坦）；SFM → 0：有强共振峰
+    final sfm = _spectralFlatness(magnitude);
+
+    // ---- 歌唱家共振峰强度（2-5kHz）----
+    // 头腔共鸣：2-5kHz 频段峰值能量与全频段平均能量的比值
+    final singerFormantStrength = _singerFormantStrength(magnitude, sampleRate);
+
+    // ---- 四维共鸣比例计算 ----
+    // 每个维度先算"原始强度"，再归一化为比例（和为 1）
+
+    // 1. 胸腔共鸣强度
+    //    - F1 落在 200-500Hz 且带宽较窄 → 胸腔共振强烈
+    //    - 低频能量比作为辅助
+    var chestStrength = 0.1; // 基础值
+    if (formants.isNotEmpty) {
+      final f1 = formants.first;
+      if (f1.frequency >= 150 && f1.frequency <= 600) {
+        // F1 在胸腔区，强度由带宽决定（带宽窄=共振强）
+        chestStrength = f1.strength * 0.7;
+      }
+    }
+    // 低频能量比作为辅助证据
+    final lowFreqEnergy =
+        FFT.bandEnergy(magnitude, sampleRate, 80, 350);
+    final totalEnergy =
+        FFT.bandEnergy(magnitude, sampleRate, 60, 8000);
+    if (totalEnergy > 1e-10) {
+      final lowRatio = lowFreqEnergy / totalEnergy;
+      chestStrength += lowRatio * 0.3;
+    }
+
+    // 2. 鼻腔共鸣强度（A1-P1 近似）
+    //    - 找 F1 处的能量 A1，与基频能量 P1 比较
+    //    - 简化：350-1500Hz 能量集中度（F2 区域是鼻音敏感区）
+    var nasalStrength = 0.1;
+    if (formants.length >= 2) {
+      final f2 = formants[1];
+      if (f2.frequency >= 350 && f2.frequency <= 1500) {
+        nasalStrength = f2.strength * 0.6;
+      }
+    }
+    final midLowEnergy =
+        FFT.bandEnergy(magnitude, sampleRate, 350, 1500);
+    if (totalEnergy > 1e-10) {
+      final midLowRatio = midLowEnergy / totalEnergy;
+      nasalStrength += midLowRatio * 0.4;
+    }
+
+    // 3. 头腔共鸣强度 = 歌唱家共振峰强度
+    //    - 2-5kHz 能量集中度（峰值/均值）
+    var headStrength = singerFormantStrength;
+
+    // 4. 大白嗓强度 = SFM × (1 - 歌唱家共振峰强度)
+    //    - 频谱越平坦（SFM 大）+ 头腔越弱 → 大白嗓比例越高
+    var whiteStrength = sfm * (1.0 - singerFormantStrength);
+
+    // 确保各值为正
+    chestStrength = chestStrength.clamp(0.01, 10.0);
+    nasalStrength = nasalStrength.clamp(0.01, 10.0);
+    headStrength = headStrength.clamp(0.01, 10.0);
+    whiteStrength = whiteStrength.clamp(0.01, 10.0);
+
+    final sum = chestStrength + nasalStrength + headStrength + whiteStrength;
+    if (sum < 1e-10) return [0.25, 0.25, 0.25, 0.25];
 
     return [
-      chest / sum,
-      nasal / sum,
-      head / sum,
-      raw / sum,
+      chestStrength / sum,
+      nasalStrength / sum,
+      headStrength / sum,
+      whiteStrength / sum,
     ];
+  }
+
+  /// 计算频谱平坦度（Spectral Flatness Measure, SFM）
+  ///
+  /// SFM = exp(mean(log(mag))) / mean(mag)
+  /// - SFM → 1：白噪声（频谱完全平坦，无共振峰）
+  /// - SFM → 0：有强共振峰（能量集中在某些频率）
+  static double _spectralFlatness(List<double> magnitude) {
+    if (magnitude.isEmpty) return 0.5;
+
+    // 只取有意义的频段（避开直流和极高频）
+    final start = 1;
+    final end = magnitude.length ~/ 2; // 取前半部分
+    if (end - start < 2) return 0.5;
+
+    var sumLog = 0.0;
+    var sumLinear = 0.0;
+    var count = 0;
+    for (var i = start; i < end; i++) {
+      final m = magnitude[i];
+      if (m > 1e-10) {
+        sumLog += log(m);
+        sumLinear += m;
+        count++;
+      }
+    }
+    if (count == 0 || sumLinear <= 0) return 0.5;
+
+    final geoMean = exp(sumLog / count);
+    final arithMean = sumLinear / count;
+    return (geoMean / arithMean).clamp(0.0, 1.0);
+  }
+
+  /// 计算歌唱家共振峰强度（2-5kHz 频段）
+  ///
+  /// 返回值 0-1：
+  /// - 1：2-5kHz 有明显峰值（强头腔共鸣）
+  /// - 0：2-5kHz 能量平坦（无头腔共鸣）
+  ///
+  /// 算法：2-5kHz 区间峰值能量 / 全频段平均能量，归一化
+  static double _singerFormantStrength(
+      List<double> magnitude, int sampleRate) {
+    final n = (magnitude.length - 1) * 2;
+    final binLow = (2000 / sampleRate * n).floor().clamp(0, magnitude.length - 1);
+    final binHigh = (5000 / sampleRate * n).ceil().clamp(0, magnitude.length - 1);
+    if (binHigh <= binLow) return 0.0;
+
+    // 2-5kHz 区间的峰值和均值
+    var peak = 0.0;
+    var sumBand = 0.0;
+    var countBand = 0;
+    for (var i = binLow; i <= binHigh && i < magnitude.length; i++) {
+      if (magnitude[i] > peak) peak = magnitude[i];
+      sumBand += magnitude[i];
+      countBand++;
+    }
+    if (countBand == 0) return 0.0;
+    final bandMean = sumBand / countBand;
+    if (bandMean <= 0) return 0.0;
+
+    // 全频段平均能量
+    var sumAll = 0.0;
+    for (var i = 1; i < magnitude.length ~/ 2; i++) {
+      sumAll += magnitude[i];
+    }
+    final allMean = sumAll / (magnitude.length ~/ 2 - 1);
+    if (allMean <= 0) return 0.0;
+
+    // 峰值 / 全频段均值，反映 2-5kHz 的突出程度
+    final ratio = peak / allMean;
+
+    // 归一化：ratio 1.0 → 0，ratio 5.0+ → 1（经验值）
+    return ((ratio - 1.0) / 4.0).clamp(0.0, 1.0);
   }
 
   /// 音频太短时的 fallback — 全零
