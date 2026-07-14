@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import '../models/recording.dart';
 import 'audio_analysis.dart';
+import 'audio_decoder_service.dart';
 import 'database_service.dart';
 
 /// 录音服务 — 管理录音生命周期 + 分析 + 入库
@@ -107,56 +108,78 @@ class RecordingService {
   /// 导入本地音频文件 — 复制到 App 目录 + 分析 + 入库
   /// 返回 null 表示导入失败或文件无效
   Future<Recording?> importFile(String srcPath) async {
-    final srcFile = File(srcPath);
-    if (!await srcFile.exists()) return null;
+    String? destPath;
+    try {
+      final srcFile = File(srcPath);
+      if (!await srcFile.exists()) return null;
 
-    // 复制到 App recordings 目录
-    final dir = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
-    if (!await recordingsDir.exists()) {
-      await recordingsDir.create(recursive: true);
-    }
+      // 复制到 App recordings 目录
+      final dir = await getApplicationDocumentsDirectory();
+      final recordingsDir = Directory(p.join(dir.path, 'recordings'));
+      if (!await recordingsDir.exists()) {
+        await recordingsDir.create(recursive: true);
+      }
 
-    final now = DateTime.now();
-    final fileName = 'rec_${now.millisecondsSinceEpoch}.wav';
-    final destPath = p.join(recordingsDir.path, fileName);
-    await srcFile.copy(destPath);
+      final now = DateTime.now();
+      final fileName = 'rec_${now.millisecondsSinceEpoch}.wav';
+      destPath = p.join(recordingsDir.path, fileName);
 
-    // 分析音频
-    final analysis = await AudioAnalysisService.analyze(destPath);
-    if (analysis == null) {
-      // 分析失败，删除已复制的文件
-      await File(destPath).delete();
+      // 判断源文件格式 — WAV 直接复制，其他格式通过原生 MediaCodec 解码
+      final isWav = srcPath.toLowerCase().endsWith('.wav');
+      if (isWav) {
+        await srcFile.copy(destPath);
+      } else {
+        // M4A/MP3/AAC 等需要先解码为 WAV
+        final decoded = await AudioDecoderService.decodeToWav(srcPath, destPath);
+        if (!decoded) return null;
+      }
+
+      // 分析音频（内部已捕获格式异常 + 限制 5 分钟长度，不会卡死）
+      final analysis = await AudioAnalysisService.analyze(destPath);
+      if (analysis == null) {
+        // 分析失败（非 WAV / 损坏 / 静音 / 太短），删除已复制的文件
+        try {
+          await File(destPath).delete();
+        } catch (_) {}
+        return null;
+      }
+
+      final dateLabel =
+          '${now.month.toString().padLeft(2, '0')}.${now.day.toString().padLeft(2, '0')} '
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+      final recording = Recording(
+        filePath: destPath,
+        dateTimeLabel: dateLabel,
+        duration: analysis.duration,
+        waveform: analysis.waveform,
+        overviewWaveform: analysis.overviewWaveform,
+        resonanceStack: analysis.resonanceStack,
+        pitch: analysis.pitch,
+        createdAt: now.millisecondsSinceEpoch,
+      );
+
+      final id = await _db.insert(recording);
+      return Recording(
+        id: id,
+        filePath: recording.filePath,
+        dateTimeLabel: recording.dateTimeLabel,
+        duration: recording.duration,
+        waveform: recording.waveform,
+        overviewWaveform: recording.overviewWaveform,
+        resonanceStack: recording.resonanceStack,
+        pitch: recording.pitch,
+        createdAt: recording.createdAt,
+      );
+    } catch (e) {
+      // 任何未预期异常 — 清理文件并返回 null，绝不卡死
+      if (destPath != null) {
+        try {
+          await File(destPath).delete();
+        } catch (_) {}
+      }
       return null;
     }
-
-    final dateLabel =
-        '${now.month.toString().padLeft(2, '0')}.${now.day.toString().padLeft(2, '0')} '
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-
-    final recording = Recording(
-      filePath: destPath,
-      dateTimeLabel: dateLabel,
-      duration: analysis.duration,
-      waveform: analysis.waveform,
-      overviewWaveform: analysis.overviewWaveform,
-      resonanceStack: analysis.resonanceStack,
-      pitch: analysis.pitch,
-      createdAt: now.millisecondsSinceEpoch,
-    );
-
-    final id = await _db.insert(recording);
-    return Recording(
-      id: id,
-      filePath: recording.filePath,
-      dateTimeLabel: recording.dateTimeLabel,
-      duration: recording.duration,
-      waveform: recording.waveform,
-      overviewWaveform: recording.overviewWaveform,
-      resonanceStack: recording.resonanceStack,
-      pitch: recording.pitch,
-      createdAt: recording.createdAt,
-    );
   }
 
   /// 删除录音

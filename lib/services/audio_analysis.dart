@@ -34,13 +34,28 @@ class AudioAnalysisService {
 
   /// 分析 WAV 文件。返回 null 表示录音无效（太短或静音）
   static Future<AudioAnalysisResult?> analyze(String wavFilePath) async {
-    final wav = await WavReader.read(wavFilePath);
-    final samples = wav.samples;
+    WavData wav;
+    try {
+      wav = await WavReader.read(wavFilePath);
+    } catch (e) {
+      // 文件格式不支持（非 WAV / 损坏）
+      return null;
+    }
+
+    var samples = wav.samples;
     final sampleRate = wav.sampleRate;
-    final duration = wav.duration;
+    var duration = wav.duration;
 
     // 0. 整体 RMS 检测 — 太短或整体静音直接拒绝
     if (samples.length < sampleRate * 0.3) return null; // < 0.3 秒
+
+    // 限制最大分析长度 — 超过 5 分钟的音频只取前 5 分钟，避免分析卡死
+    final maxSamples = sampleRate * 300; // 5 分钟
+    if (samples.length > maxSamples) {
+      samples = Float64List.sublistView(samples, 0, maxSamples);
+      duration = Duration(milliseconds: (maxSamples / sampleRate * 1000).round());
+    }
+
     final overallRms = _rms(samples);
     if (overallRms < 0.005) return null; // 整体静音
 

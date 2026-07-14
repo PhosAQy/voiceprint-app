@@ -75,7 +75,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
     setState(() => _importing = true);
 
-    final recording = await _service.importFile(filePath);
+    // 超时保护 — 最长 2 分钟，避免无限转圈
+    final recording = await _service
+        .importFile(filePath)
+        .timeout(const Duration(minutes: 2), onTimeout: () => null);
 
     if (mounted) {
       setState(() => _importing = false);
@@ -90,7 +93,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('导入失败：文件无效或格式不支持'),
+            content: Text('导入失败：文件无效、格式不支持或超时'),
             behavior: SnackBarBehavior.floating,
           ),
         );
