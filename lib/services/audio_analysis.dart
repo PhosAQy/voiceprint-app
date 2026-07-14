@@ -229,42 +229,60 @@ class AudioAnalysisService {
     // ---- 四维共鸣比例计算 ----
     // 每个维度先算"原始强度"，再归一化为比例（和为 1）
 
+    final totalEnergy =
+        FFT.bandEnergy(magnitude, sampleRate, 60, 8000);
+
     // 1. 胸腔共鸣强度
-    //    - F1 落在 200-500Hz 且带宽较窄 → 胸腔共振强烈
-    //    - 低频能量比作为辅助
-    var chestStrength = 0.1; // 基础值
+    //    声学依据：胸声（chest voice）的本质是基频 + 前几个低次谐波
+    //    能量集中。发胸声时基频 ~80-200Hz，前 3 谐波 ~240-600Hz
+    //    全部落在低频区，低频能量占比高。
+    //
+    //    主要指标：低频能量集中度（80-600Hz 占总能量比例）
+    //    辅助指标：F1 位置（F1 落在 150-600Hz 说明声道较长）
+    final lowFreqEnergy =
+        FFT.bandEnergy(magnitude, sampleRate, 80, 600);
+    var chestStrength = 0.2; // 基础值，保证不为零
+    if (totalEnergy > 1e-10) {
+      final lowRatio = lowFreqEnergy / totalEnergy;
+      // 大幅加权：发胸声时 lowRatio 0.4-0.6 → chestStrength 1.0-1.5
+      chestStrength += lowRatio * 2.5;
+    }
     if (formants.isNotEmpty) {
       final f1 = formants.first;
       if (f1.frequency >= 150 && f1.frequency <= 600) {
-        // F1 在胸腔区，强度由带宽决定（带宽窄=共振强）
-        chestStrength = f1.strength * 0.7;
+        // F1 在胸腔区，加权
+        chestStrength += f1.strength * 0.4;
       }
-    }
-    // 低频能量比作为辅助证据
-    final lowFreqEnergy =
-        FFT.bandEnergy(magnitude, sampleRate, 80, 350);
-    final totalEnergy =
-        FFT.bandEnergy(magnitude, sampleRate, 60, 8000);
-    if (totalEnergy > 1e-10) {
-      final lowRatio = lowFreqEnergy / totalEnergy;
-      chestStrength += lowRatio * 0.3;
     }
 
-    // 2. 鼻腔共鸣强度（A1-P1 近似）
-    //    - 找 F1 处的能量 A1，与基频能量 P1 比较
-    //    - 简化：350-1500Hz 能量集中度（F2 区域是鼻音敏感区）
-    var nasalStrength = 0.1;
-    if (formants.length >= 2) {
-      final f2 = formants[1];
-      if (f2.frequency >= 350 && f2.frequency <= 1500) {
-        nasalStrength = f2.strength * 0.6;
+    // 2. 鼻腔共鸣强度（A1-P1 法）
+    //    声学依据（Chen 1997）：鼻音化时 F1 处幅度 A1 明显高于
+    //    基频幅度 P1。非鼻音时 A1 ≈ P1 或 A1 < P1。
+    //
+    //    测量：F1 处频谱幅度 A1，基频附近幅度 P1
+    //    鼻音度 = max(0, (A1 - P1) / max(A1, P1))
+    //    只有 F1 明显强于基频时才算鼻音（避免把胸声谐波误判为鼻腔）
+    var nasalStrength = 0.15; // 基础值
+    if (formants.isNotEmpty) {
+      final f1Freq = formants.first.frequency;
+      // 找基频附近的最大幅度（P1）：扫描 70-250Hz 找峰值
+      final p1Bin = _findPeakBin(magnitude, sampleRate, 70, 250);
+      // F1 处幅度（A1）：F1 频率附近的峰值
+      final a1Bin = _findPeakBin(magnitude, sampleRate,
+          f1Freq - 50, f1Freq + 50);
+      if (p1Bin >= 0 && a1Bin >= 0) {
+        final p1 = magnitude[p1Bin];
+        final a1 = magnitude[a1Bin];
+        if (p1 > 1e-10 && a1 > 1e-10) {
+          // 鼻音度：A1 相对 P1 的超出程度
+          final nasality = (a1 - p1) / (a1 > p1 ? a1 : p1);
+          // 只有 A1 明显大于 P1（>20%）才算鼻音
+          if (nasality > 0.2) {
+            nasalStrength = nasality * 0.8;
+          }
+          // 否则鼻腔保持基础值（非鼻音）
+        }
       }
-    }
-    final midLowEnergy =
-        FFT.bandEnergy(magnitude, sampleRate, 350, 1500);
-    if (totalEnergy > 1e-10) {
-      final midLowRatio = midLowEnergy / totalEnergy;
-      nasalStrength += midLowRatio * 0.4;
     }
 
     // 3. 头腔共鸣强度 = 歌唱家共振峰强度
@@ -273,7 +291,8 @@ class AudioAnalysisService {
 
     // 4. 大白嗓强度 = SFM × (1 - 歌唱家共振峰强度)
     //    - 频谱越平坦（SFM 大）+ 头腔越弱 → 大白嗓比例越高
-    var whiteStrength = sfm * (1.0 - singerFormantStrength);
+    //    - 限制最大权重，避免过度压制其他维度
+    var whiteStrength = sfm * (1.0 - singerFormantStrength) * 0.7;
 
     // 确保各值为正
     chestStrength = chestStrength.clamp(0.01, 10.0);
@@ -290,6 +309,26 @@ class AudioAnalysisService {
       headStrength / sum,
       whiteStrength / sum,
     ];
+  }
+
+  /// 在指定频率范围内找到频谱幅度的峰值 bin
+  /// 返回 bin 索引，找不到返回 -1
+  static int _findPeakBin(List<double> magnitude, int sampleRate,
+      double freqLow, double freqHigh) {
+    final n = (magnitude.length - 1) * 2;
+    final binLow = (freqLow / sampleRate * n).floor().clamp(0, magnitude.length - 1);
+    final binHigh = (freqHigh / sampleRate * n).ceil().clamp(0, magnitude.length - 1);
+    if (binHigh <= binLow) return -1;
+
+    var peakBin = -1;
+    var peakVal = -1.0;
+    for (var i = binLow; i <= binHigh && i < magnitude.length; i++) {
+      if (magnitude[i] > peakVal) {
+        peakVal = magnitude[i];
+        peakBin = i;
+      }
+    }
+    return peakBin;
   }
 
   /// 计算频谱平坦度（Spectral Flatness Measure, SFM）
