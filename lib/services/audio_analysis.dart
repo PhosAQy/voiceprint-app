@@ -114,17 +114,18 @@ class AudioAnalysisService {
       final center = i * pitchStep + pitchStep ~/ 2;
       final ps = center - _pitchSize ~/ 2;
       if (ps < 0 || ps + _pitchSize > samples.length) {
-        pitchValues.add(0.0);
+        pitchValues.add(-1.0);
         continue;
       }
       final frame = Float64List.sublistView(samples, ps, ps + _pitchSize);
       if (_rms(frame) < 0.01) {
-        pitchValues.add(0.0);
+        pitchValues.add(-1.0);
         continue;
       }
       final freq = detector.detect(frame);
+      // 存储 MIDI 值（-1 = 静音/检测失败），不归一化，保留原音音高
       pitchValues.add(
-          freq != null ? PitchDetector.freqToNormalized(freq) : 0.0);
+          freq != null ? PitchDetector.freqToMidi(freq) : -1.0);
     }
 
     return AudioAnalysisResult(
@@ -212,7 +213,7 @@ class AudioAnalysisService {
       overviewWaveform: List.filled(_overviewSamples, 0.0),
       resonanceStack:
           List.generate(segCount, (_) => [0.0, 0.0, 0.0, 0.0]),
-      pitch: List.filled(pitchCount, 0.0),
+      pitch: List.filled(pitchCount, -1.0),
       duration: duration,
     );
   }
