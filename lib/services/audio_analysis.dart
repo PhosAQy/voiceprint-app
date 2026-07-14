@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'audio_filter.dart';
 import 'fft.dart';
 import 'pitch_detector.dart';
 import 'wav_reader.dart';
@@ -58,7 +59,10 @@ class AudioAnalysisService {
     final overallRms = _rms(samples);
     if (overallRms < 0.005) return null; // 整体静音
 
-    // 1. 提取波形缩略图
+    // 0.5 杂音过滤 — 高通(80Hz) + 低通(8kHz) + 软降噪门
+    samples = AudioFilter.process(samples, sampleRate);
+
+    // 1. 提取波形缩略图（用过滤后的数据，更干净）
     final waveform = _extractWaveform(samples, _thumbnailSamples);
     final overviewWaveform = _extractWaveform(samples, _overviewSamples);
 
