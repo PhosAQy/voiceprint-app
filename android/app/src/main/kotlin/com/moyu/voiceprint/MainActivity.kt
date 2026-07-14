@@ -71,6 +71,12 @@ class MainActivity : FlutterActivity() {
                 "isRunning" -> {
                     result.success(isMonitoring)
                 }
+                "updateParams" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val params = call.argument<Map<String, Any>>("params") ?: emptyMap()
+                    updateDspParams(params)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -99,46 +105,101 @@ class MainActivity : FlutterActivity() {
 
     // ==================== 耳返 ====================
 
+    // DSP 参数（由 Flutter 实时更新，DSP 线程读取）
+    @Volatile private var dspParams = DspParams()
+    private var dsp: DspPipeline? = null
+
     private fun hasMicPermission(): Boolean {
         return ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 
+    /// 更新 DSP 参数（由 Flutter 调用）
+    private fun updateDspParams(params: Map<String, Any>) {
+        val p = dspParams.copy()
+        (params["reverbIndex"] as? Number)?.toInt()?.let { p.reverbIndex = it }
+        (params["dryWet"] as? Number)?.toDouble()?.let { p.dryWet = it }
+        (params["decay"] as? Number)?.toDouble()?.let { p.decay = it }
+        (params["preDelay"] as? Number)?.toDouble()?.let { p.preDelay = it }
+        (params["monitorVol"] as? Number)?.toDouble()?.let { p.monitorVol = it }
+        (params["eqLow"] as? Number)?.toDouble()?.let { p.eqLow = it }
+        (params["eqMid"] as? Number)?.toDouble()?.let { p.eqMid = it }
+        (params["eqHigh"] as? Number)?.toDouble()?.let { p.eqHigh = it }
+        (params["micIndex"] as? Number)?.toInt()?.let { p.micIndex = it }
+        dspParams = p
+        // 同步 EQ 系数到 biquad
+        dsp?.updateEq(p.eqLow, p.eqMid, p.eqHigh)
+    }
+
     private fun startMonitoring() {
+        // 低延迟：用最小 buffer，强制 128 样本（~2.9ms @ 44.1kHz）
         val minBufIn = AudioRecord.getMinBufferSize(sampleRate, channelConfigIn, audioFormat)
         val minBufOut = AudioTrack.getMinBufferSize(sampleRate, channelConfigOut, audioFormat)
-        val bufferSize = Math.max(minBufIn, minBufOut)
+        // 目标 buffer：128 样本，但不小于系统最小值
+        val targetFrames = 128
+        val bufferSize = maxOf(minBufIn, minBufOut, targetFrames * 2) // 字节
 
         try {
+            // 用小 buffer + VOICE_COMMUNICATION 源实现低延迟（~3ms/128帧）
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 sampleRate,
                 channelConfigIn,
                 audioFormat,
-                bufferSize * 2
+                bufferSize
             )
             audioTrack = AudioTrack(
                 AudioManager.STREAM_VOICE_CALL,
                 sampleRate,
                 channelConfigOut,
                 audioFormat,
-                bufferSize * 2,
+                bufferSize,
                 AudioTrack.MODE_STREAM
             )
+            // API 26+ 启用低延迟模式（运行时反射，避免编译期依赖）
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val m = AudioRecord::class.java.getMethod("setPerformanceMode", Int::class.javaPrimitiveType)
+                    m.invoke(audioRecord, 1) // PERFORMANCE_MODE_LOW_LATENCY = 1
+                    val m2 = AudioTrack::class.java.getMethod("setPerformanceMode", Int::class.javaPrimitiveType)
+                    m2.invoke(audioTrack, 1)
+                } catch (_: Exception) {}
+            }
             audioTrack?.setVolume(1.0f)
         } catch (e: Exception) {
             return
         }
+
+        // 初始化 DSP 处理器
+        val dspInst = DspPipeline(sampleRate)
+        dsp = dspInst
+        // 应用初始 EQ
+        dspInst.updateEq(dspParams.eqLow, dspParams.eqMid, dspParams.eqHigh)
 
         isMonitoring = true
         audioRecord?.startRecording()
         audioTrack?.play()
 
         monitorThread = Thread {
-            val buffer = ShortArray(bufferSize)
+            // 每次处理 128 帧（~2.9ms），保证低延迟
+            val frameSize = targetFrames
+            val buffer = ShortArray(frameSize)
+            val processed = FloatArray(frameSize)
             while (isMonitoring) {
                 try {
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: -1
-                    if (read != null && read > 0) {
+                    val read = audioRecord?.read(buffer, 0, frameSize) ?: -1
+                    if (read > 0) {
+                        // Short → Float
+                        for (i in 0 until read) {
+                            processed[i] = buffer[i] / 32768.0f
+                        }
+                        // DSP 处理
+                        val params = dspParams
+                        dspInst.process(processed, read, params)
+                        // Float → Short
+                        for (i in 0 until read) {
+                            val v = (processed[i] * 32767.0f).toInt().coerceIn(-32768, 32767)
+                            buffer[i] = v.toShort()
+                        }
                         audioTrack?.write(buffer, 0, read)
                     }
                 } catch (e: Exception) {
@@ -158,6 +219,7 @@ class MainActivity : FlutterActivity() {
         audioTrack?.release()
         audioRecord = null
         audioTrack = null
+        dsp = null
     }
 
     // ==================== 音频解码 ====================

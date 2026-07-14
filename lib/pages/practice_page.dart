@@ -65,6 +65,8 @@ class _PracticePageState extends State<PracticePage>
       if (!mounted) return;
       if (ok) {
         setState(() => _earOn = true);
+        // 启动后立即推送当前参数
+        _pushParams();
       } else {
         _showPermissionDialog();
       }
@@ -73,6 +75,22 @@ class _PracticePageState extends State<PracticePage>
       await _earMonitor.stop();
       if (mounted) setState(() => _earOn = false);
     }
+  }
+
+  /// 实时推送 DSP 参数到原生层
+  void _pushParams() {
+    if (!_earOn) return;
+    _earMonitor.updateParams(EarMonitorParams(
+      reverbIndex: _reverbIndex,
+      dryWet: _dryWet,
+      decay: _decay,
+      preDelay: _preDelay,
+      monitorVol: _monitorVol,
+      eqLow: _eqLow,
+      eqMid: _eqMid,
+      eqHigh: _eqHigh,
+      micIndex: _micIndex,
+    ));
   }
 
   void _onRecordTap() async {
@@ -96,6 +114,7 @@ class _PracticePageState extends State<PracticePage>
       // 录音完成后恢复耳返
       if (_earOn && mounted) {
         await _earMonitor.start();
+        _pushParams();
       }
 
       if (mounted) {
@@ -119,6 +138,7 @@ class _PracticePageState extends State<PracticePage>
         // 录音失败，恢复耳返
         if (_earOn) {
           await _earMonitor.start();
+          _pushParams();
         }
         _showPermissionDialog();
         return;
@@ -438,7 +458,10 @@ class _PracticePageState extends State<PracticePage>
               _ReverbCard(
                 reverb: reverbs[i],
                 selected: _reverbIndex == i,
-                onTap: () => setState(() => _reverbIndex = i),
+                onTap: () {
+                  setState(() => _reverbIndex = i);
+                  _pushParams();
+                },
               ),
           ],
         ),
@@ -447,21 +470,30 @@ class _PracticePageState extends State<PracticePage>
           label: '干湿比',
           value: _dryWet,
           valueLabel: '${(_dryWet * 100).round()}%',
-          onChanged: (v) => setState(() => _dryWet = v),
+          onChanged: (v) {
+            setState(() => _dryWet = v);
+            _pushParams();
+          },
         ),
         const SizedBox(height: 14),
         VpSliderRow(
           label: '衰减时间',
           value: _decay,
           valueLabel: '${(_decay * 3).toStringAsFixed(1)}s',
-          onChanged: (v) => setState(() => _decay = v),
+          onChanged: (v) {
+            setState(() => _decay = v);
+            _pushParams();
+          },
         ),
         const SizedBox(height: 14),
         VpSliderRow(
           label: '预延迟',
           value: _preDelay,
           valueLabel: '${(_preDelay * 60).round()}ms',
-          onChanged: (v) => setState(() => _preDelay = v),
+          onChanged: (v) {
+            setState(() => _preDelay = v);
+            _pushParams();
+          },
         ),
       ],
     );
@@ -472,7 +504,10 @@ class _PracticePageState extends State<PracticePage>
       label: '监听音量',
       value: _monitorVol,
       valueLabel: '${(_monitorVol * 100).round()}%',
-      onChanged: (v) => setState(() => _monitorVol = v),
+      onChanged: (v) {
+        setState(() => _monitorVol = v);
+        _pushParams();
+      },
     );
   }
 
@@ -492,7 +527,10 @@ class _PracticePageState extends State<PracticePage>
               VpChip(
                 label: mics[i],
                 selected: _micIndex == i,
-                onTap: () => setState(() => _micIndex = i),
+                onTap: () {
+                  setState(() => _micIndex = i);
+                  _pushParams();
+                },
               ),
           ],
         ),
@@ -501,7 +539,10 @@ class _PracticePageState extends State<PracticePage>
           label: '低频',
           value: _eqLow,
           valueLabel: _eqLabel(_eqLow),
-          onChanged: (v) => setState(() => _eqLow = v),
+          onChanged: (v) {
+            setState(() => _eqLow = v);
+            _pushParams();
+          },
           centerOrigin: true,
         ),
         const SizedBox(height: 14),
@@ -509,7 +550,10 @@ class _PracticePageState extends State<PracticePage>
           label: '中频',
           value: _eqMid,
           valueLabel: _eqLabel(_eqMid),
-          onChanged: (v) => setState(() => _eqMid = v),
+          onChanged: (v) {
+            setState(() => _eqMid = v);
+            _pushParams();
+          },
           centerOrigin: true,
         ),
         const SizedBox(height: 14),
@@ -517,7 +561,10 @@ class _PracticePageState extends State<PracticePage>
           label: '高频',
           value: _eqHigh,
           valueLabel: _eqLabel(_eqHigh),
-          onChanged: (v) => setState(() => _eqHigh = v),
+          onChanged: (v) {
+            setState(() => _eqHigh = v);
+            _pushParams();
+          },
           centerOrigin: true,
         ),
       ],
