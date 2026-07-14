@@ -26,7 +26,6 @@ class AudioAnalysisResult {
 class AudioAnalysisService {
   AudioAnalysisService._();
 
-  static const int _segmentCount = 20;
   static const int _thumbnailSamples = 14;
   static const int _overviewSamples = 60;
   static const int _fftSize = 2048;
@@ -63,72 +62,69 @@ class AudioAnalysisService {
     final waveform = _extractWaveform(samples, _thumbnailSamples);
     final overviewWaveform = _extractWaveform(samples, _overviewSamples);
 
-    // 2. 分段分析
-    final segmentLength = (samples.length / _segmentCount).floor();
-    if (segmentLength < _fftSize) {
-      return _fallbackResult(duration);
+    // 2. 共鸣分析 — 以 FFT 窗口大小为步长，精度最大化（无缝紧挨 = 连续色带）
+    final maxSegByData = samples.length ~/ _fftSize;
+    if (maxSegByData < 1) {
+      return _fallbackResult(duration, 1, 1);
     }
+    const maxSegCount = 800;
+    final segCount =
+        maxSegByData > maxSegCount ? maxSegCount : maxSegByData;
+    final segLen = samples.length ~/ segCount;
 
     final detector = PitchDetector(sampleRate: sampleRate);
     final resonanceStack = <List<double>>[];
-    final pitchValues = <double>[];
 
-    for (var i = 0; i < _segmentCount; i++) {
-      final start = i * segmentLength;
-      final end =
-          (start + segmentLength).clamp(0, samples.length);
+    for (var i = 0; i < segCount; i++) {
+      final start = i * segLen;
+      final end = (start + segLen).clamp(0, samples.length);
+      final curLen = end - start;
 
-      // 提取本段数据
-      final segLen = end - start;
-      if (segLen < _fftSize) {
+      if (curLen < _fftSize) {
         resonanceStack.add([0, 0, 0, 0]);
-        pitchValues.add(0.0);
         continue;
       }
 
       final segment = Float64List.sublistView(samples, start, end);
 
-      // 分段 RMS 预检 — 静音段直接填零，不进行无意义分析
-      final segRms = _rms(segment);
-      if (segRms < 0.01) {
+      // 分段 RMS 预检 — 静音段直接填零
+      if (_rms(segment) < 0.01) {
         resonanceStack.add([0, 0, 0, 0]);
-        pitchValues.add(0.0);
         continue;
       }
 
-      // 音高检测 — 取段中间的 _pitchSize 个样本
-      final pitchStart = (segLen - _pitchSize) ~/ 2;
-      final pitchFrame =
-          Float64List.sublistView(segment, pitchStart, pitchStart + _pitchSize);
-      final freq = detector.detect(pitchFrame);
-      if (freq != null) {
-        pitchValues.add(PitchDetector.freqToNormalized(freq));
-      } else {
-        // 尝试多个位置取平均
-        final pitches = <double>[];
-        for (var p = 0; p < 3; p++) {
-          final ps = (segLen / 4 * (p + 1)).floor() - _pitchSize ~/ 2;
-          if (ps >= 0 && ps + _pitchSize <= segLen) {
-            final f = detector.detect(
-                Float64List.sublistView(segment, ps, ps + _pitchSize));
-            if (f != null) pitches.add(f);
-          }
-        }
-        if (pitches.isNotEmpty) {
-          final avgFreq =
-              pitches.reduce((a, b) => a + b) / pitches.length;
-          pitchValues.add(PitchDetector.freqToNormalized(avgFreq));
-        } else {
-          pitchValues.add(0.0); // 检测不到音高，归零（不再用 0.5/C4）
-        }
-      }
-
-      // 共鸣分析 — 取段中间的 _fftSize 个样本做 FFT
-      final fftStart = (segLen - _fftSize) ~/ 2;
+      // 共鸣分析 — 取段中间 _fftSize 样本做 FFT
+      final fftStart = (curLen - _fftSize) ~/ 2;
       final fftFrame =
           Float64List.sublistView(segment, fftStart, fftStart + _fftSize);
       final mag = FFT.magnitudeSpectrum(fftFrame);
       resonanceStack.add(_calcResonance(mag, sampleRate));
+    }
+
+    // 3. 音高曲线 — 以检测窗口大小为步长，精度最大化（极密采样 → 极平滑曲线）
+    final maxPitchByData = samples.length ~/ _pitchSize;
+    const maxPitchPoints = 1500;
+    final pitchCount = (maxPitchByData > maxPitchPoints
+            ? maxPitchPoints
+            : maxPitchByData)
+        .clamp(1, maxPitchPoints);
+    final pitchStep = samples.length ~/ pitchCount;
+    final pitchValues = <double>[];
+    for (var i = 0; i < pitchCount; i++) {
+      final center = i * pitchStep + pitchStep ~/ 2;
+      final ps = center - _pitchSize ~/ 2;
+      if (ps < 0 || ps + _pitchSize > samples.length) {
+        pitchValues.add(0.0);
+        continue;
+      }
+      final frame = Float64List.sublistView(samples, ps, ps + _pitchSize);
+      if (_rms(frame) < 0.01) {
+        pitchValues.add(0.0);
+        continue;
+      }
+      final freq = detector.detect(frame);
+      pitchValues.add(
+          freq != null ? PitchDetector.freqToNormalized(freq) : 0.0);
     }
 
     return AudioAnalysisResult(
@@ -209,13 +205,14 @@ class AudioAnalysisService {
   }
 
   /// 音频太短时的 fallback — 全零
-  static AudioAnalysisResult _fallbackResult(Duration duration) {
+  static AudioAnalysisResult _fallbackResult(
+      Duration duration, int segCount, int pitchCount) {
     return AudioAnalysisResult(
       waveform: List.filled(_thumbnailSamples, 0.0),
       overviewWaveform: List.filled(_overviewSamples, 0.0),
-      resonanceStack: List.generate(
-          _segmentCount, (_) => [0.0, 0.0, 0.0, 0.0]),
-      pitch: List.filled(_segmentCount, 0.0),
+      resonanceStack:
+          List.generate(segCount, (_) => [0.0, 0.0, 0.0, 0.0]),
+      pitch: List.filled(pitchCount, 0.0),
       duration: duration,
     );
   }

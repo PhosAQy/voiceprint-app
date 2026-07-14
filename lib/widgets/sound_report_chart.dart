@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import '../models/recording.dart';
 import '../theme/tokens.dart';
 
-/// 录音详情页的「声音报告」图：4 层堆叠柱状图 + 音高曲线叠加
+/// 录音详情页的「声音报告」图：4 层堆叠平滑面积图 + 音高平滑曲线叠加
 class SoundReportChart extends StatelessWidget {
   final List<List<double>> stack; // 每段 [胸腔, 鼻腔, 头腔, 大白嗓]
-  final List<double> pitch; // 音高 0.0–1.0
+  final List<double> pitch; // 音高 0.0–1.0（密集采样）
+  final Duration duration; // 音频总时长 — 用于动态生成时间轴
   final List<Color> layerColors;
   final List<String> layerLabels;
 
@@ -13,6 +14,7 @@ class SoundReportChart extends StatelessWidget {
     super.key,
     required this.stack,
     required this.pitch,
+    required this.duration,
     this.layerColors = SoundReportConfig.layerColors,
     this.layerLabels = SoundReportConfig.layerLabels,
   });
@@ -29,6 +31,7 @@ class SoundReportChart extends StatelessWidget {
             painter: _ChartPainter(
               stack: stack,
               pitch: pitch,
+              duration: duration,
               layerColors: layerColors,
             ),
           ),
@@ -46,17 +49,18 @@ class SoundReportChart extends StatelessWidget {
 class _ChartPainter extends CustomPainter {
   final List<List<double>> stack;
   final List<double> pitch;
+  final Duration duration;
   final List<Color> layerColors;
 
   _ChartPainter({
     required this.stack,
     required this.pitch,
+    required this.duration,
     required this.layerColors,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 留白：左 28（百分比）右 32（音名）上 8 下 22（时间标签）
     final left = 28.0;
     final right = size.width - 32;
     final top = 8.0;
@@ -64,7 +68,7 @@ class _ChartPainter extends CustomPainter {
     final plotW = right - left;
     final plotH = bottom - top;
 
-    // 网格线（25% / 50% / 75% / 100%）— 虚线 3-3
+    // 网格线 — 虚线 3-3
     final gridPaint = Paint()
       ..color = VpTokens.chartGrid
       ..strokeWidth = 1
@@ -74,7 +78,6 @@ class _ChartPainter extends CustomPainter {
       final y = top + plotH * (i / 4);
       _drawDashedLine(canvas, Offset(left, y), Offset(right, y), gridPaint, dash: 3, gap: 3);
     }
-    // 0% 实线
     final basePaint = Paint()
       ..color = VpTokens.chartGridStrong
       ..strokeWidth = 1;
@@ -82,7 +85,7 @@ class _ChartPainter extends CustomPainter {
 
     // Y 轴左标签
     const pctLabels = ['100%', '75%', '50%', '25%', '0%'];
-    final pctStyle = TextStyle(
+    final labelStyle = TextStyle(
       fontSize: 10,
       color: VpTokens.textTertiary,
       fontFamily: 'SF Mono',
@@ -90,77 +93,26 @@ class _ChartPainter extends CustomPainter {
     );
     for (var i = 0; i < pctLabels.length; i++) {
       final y = top + plotH * (i / 4);
-      _drawText(
-        canvas,
-        pctLabels[i],
-        Offset(left - 4, y),
-        pctStyle,
-        align: TextAlign.right,
-        vcenter: true,
-      );
+      _drawText(canvas, pctLabels[i], Offset(left - 4, y), labelStyle,
+          align: TextAlign.right, vcenter: true);
     }
 
     // Y 轴右标签（音名）
     const noteLabels = ['C5', 'C4', 'C3'];
     for (var i = 0; i < noteLabels.length; i++) {
       final y = top + plotH * (i / 2);
-      _drawText(
-        canvas,
-        noteLabels[i],
-        Offset(right + 4, y),
-        pctStyle,
-        align: TextAlign.left,
-        vcenter: true,
-      );
+      _drawText(canvas, noteLabels[i], Offset(right + 4, y), labelStyle,
+          align: TextAlign.left, vcenter: true);
     }
 
-    // 堆叠柱状图
-    final n = stack.length;
-    final gap = 1.0;
-    final barW = (plotW - gap * (n - 1)) / n;
-    for (var i = 0; i < n; i++) {
-      final seg = stack[i];
-      final x = left + i * (barW + gap);
-      var yCursor = bottom;
-      // 顺序：从下到上 = 胸腔 → 鼻腔 → 头腔 → 大白嗓
-      for (var j = 0; j < seg.length; j++) {
-        final h = seg[j] * plotH;
-        yCursor -= h;
-        canvas.drawRect(
-          Rect.fromLTWH(x, yCursor, barW, h),
-          Paint()..color = layerColors[j],
-        );
-      }
-    }
+    // 堆叠平滑面积图 — 每层 Catmull-Rom 平滑曲线，连续不分段
+    _drawStackedArea(canvas, left, right, bottom, plotW, plotH);
 
-    // 音高曲线（C3–C5：归一化 0.0=C3 底部，1.0=C5 顶部）
-    final pitchPts = <Offset>[];
-    for (var i = 0; i < pitch.length; i++) {
-      final x = left + (i + 0.5) * (plotW / pitch.length);
-      // 顶部=1.0 → y=top；底部=0.0 → y=bottom
-      final y = top + plotH * (1.0 - pitch[i]);
-      pitchPts.add(Offset(x, y));
-    }
-    final linePaint = Paint()
-      ..color = VpTokens.chartAnnotation
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-    final path = Path()..moveTo(pitchPts.first.dx, pitchPts.first.dy);
-    for (var i = 1; i < pitchPts.length; i++) {
-      path.lineTo(pitchPts[i].dx, pitchPts[i].dy);
-    }
-    canvas.drawPath(path, linePaint);
+    // 音高曲线 — Catmull-Rom 平滑贝塞尔
+    _drawPitchCurve(canvas, left, right, top, plotW, plotH);
 
-    // 数据点
-    final dotPaint = Paint()..color = VpTokens.chartAnnotation;
-    for (final p in pitchPts) {
-      canvas.drawCircle(p, 2.5, dotPaint);
-    }
-
-    // X 轴时间标签
-    const timeLabels = ['0:00', '0:30', '1:00', '1:30', '2:00', '2:30', '3:00', '3:30'];
+    // X 轴时间标签 — 动态生成
+    final timeLabels = _genTimeLabels(duration);
     final timeStyle = TextStyle(
       fontSize: 10,
       color: VpTokens.textTertiary,
@@ -169,14 +121,139 @@ class _ChartPainter extends CustomPainter {
     );
     for (var i = 0; i < timeLabels.length; i++) {
       final x = left + plotW * (i / (timeLabels.length - 1));
-      _drawText(
-        canvas,
-        timeLabels[i],
-        Offset(x, bottom + 6),
-        timeStyle,
-        align: TextAlign.center,
-      );
+      _drawText(canvas, timeLabels[i], Offset(x, bottom + 6), timeStyle,
+          align: TextAlign.center);
     }
+  }
+
+  /// 绘制堆叠平滑面积图
+  void _drawStackedArea(
+      Canvas canvas, double left, double right, double bottom, double plotW, double plotH) {
+    final n = stack.length;
+    if (n == 0) return;
+
+    const layerCount = 4;
+    // x 坐标：首尾对齐左右边界
+    double xAt(int i) =>
+        n > 1 ? left + i * plotW / (n - 1) : left + plotW / 2;
+
+    // 计算每段每层的累积上边界 y 值
+    // bounds[i] = [bottom, 胸腔顶, 鼻腔顶, 头腔顶, 大白嗓顶]
+    final bounds = List.generate(n, (i) {
+      final seg = stack[i];
+      var y = bottom;
+      final ys = <double>[y];
+      for (var j = 0; j < layerCount; j++) {
+        y -= seg[j] * plotH;
+        ys.add(y);
+      }
+      return ys;
+    });
+
+    for (var layer = 0; layer < layerCount; layer++) {
+      // 上边界点（该层顶部）
+      final topPts = <Offset>[];
+      for (var i = 0; i < n; i++) {
+        topPts.add(Offset(xAt(i), bounds[i][layer + 1]));
+      }
+
+      final path = Path();
+      // 上边界 — 平滑曲线
+      _addSmoothCurve(path, topPts);
+      // 下边界 — 反向直线回到起点
+      for (var i = n - 1; i >= 0; i--) {
+        path.lineTo(xAt(i), bounds[i][layer]);
+      }
+      path.close();
+
+      canvas.drawPath(path, Paint()..color = layerColors[layer]);
+    }
+  }
+
+  /// 绘制音高平滑曲线
+  void _drawPitchCurve(
+      Canvas canvas, double left, double right, double top, double plotW, double plotH) {
+    if (pitch.length < 2) return;
+
+    double xAt(int i) =>
+        pitch.length > 1 ? left + i * plotW / (pitch.length - 1) : left + plotW / 2;
+
+    final pitchPts = <Offset>[];
+    for (var i = 0; i < pitch.length; i++) {
+      final y = top + plotH * (1.0 - pitch[i]);
+      pitchPts.add(Offset(xAt(i), y));
+    }
+
+    final linePaint = Paint()
+      ..color = VpTokens.chartAnnotation
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final path = Path();
+    _addSmoothCurve(path, pitchPts);
+    canvas.drawPath(path, linePaint);
+
+    // 密集采样时只画首尾点
+    final dotPaint = Paint()..color = VpTokens.chartAnnotation;
+    if (pitchPts.length <= 30) {
+      for (final p in pitchPts) {
+        canvas.drawCircle(p, 2.5, dotPaint);
+      }
+    } else {
+      canvas.drawCircle(pitchPts.first, 2.5, dotPaint);
+      canvas.drawCircle(pitchPts.last, 2.5, dotPaint);
+    }
+  }
+
+  /// Catmull-Rom 平滑曲线 — 添加到已有 path
+  void _addSmoothCurve(Path path, List<Offset> pts) {
+    if (pts.length < 2) {
+      if (pts.length == 1) {
+        path.moveTo(pts[0].dx, pts[0].dy);
+      }
+      return;
+    }
+    path.moveTo(pts[0].dx, pts[0].dy);
+    for (var i = 0; i < pts.length - 1; i++) {
+      final p0 = i > 0 ? pts[i - 1] : pts[i];
+      final p1 = pts[i];
+      final p2 = pts[i + 1];
+      final p3 = i + 2 < pts.length ? pts[i + 2] : p2;
+      final c1x = p1.dx + (p2.dx - p0.dx) / 6;
+      final c1y = p1.dy + (p2.dy - p0.dy) / 6;
+      final c2x = p2.dx - (p3.dx - p1.dx) / 6;
+      final c2y = p2.dy - (p3.dy - p1.dy) / 6;
+      path.cubicTo(c1x, c1y, c2x, c2y, p2.dx, p2.dy);
+    }
+  }
+
+  /// 根据时长动态生成时间轴标签
+  List<String> _genTimeLabels(Duration d) {
+    final totalSec = d.inSeconds;
+    if (totalSec <= 0) return ['0:00'];
+
+    int count;
+    if (totalSec <= 20) {
+      count = 4;
+    } else if (totalSec <= 30) {
+      count = 5;
+    } else if (totalSec <= 60) {
+      count = 6;
+    } else if (totalSec <= 180) {
+      count = 6;
+    } else {
+      count = 5;
+    }
+
+    final labels = <String>[];
+    for (var i = 0; i <= count; i++) {
+      final t = (totalSec * i / count).round();
+      final m = t ~/ 60;
+      final s = t % 60;
+      labels.add('$m:${s.toString().padLeft(2, '0')}');
+    }
+    return labels;
   }
 
   void _drawDashedLine(
@@ -229,7 +306,9 @@ class _ChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ChartPainter oldDelegate) =>
-      oldDelegate.stack != stack || oldDelegate.pitch != pitch;
+      oldDelegate.stack != stack ||
+      oldDelegate.pitch != pitch ||
+      oldDelegate.duration != duration;
 }
 
 class _Legend extends StatelessWidget {
@@ -244,7 +323,6 @@ class _Legend extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final items = <Widget>[];
-    // 第一个：音高（用线 + 点）
     items.add(_LegendItem(
       icon: _LineIcon(color: VpTokens.chartAnnotation),
       label: '音高',

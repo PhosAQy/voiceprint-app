@@ -433,6 +433,7 @@ class _RecordingDetailPageState extends State<RecordingDetailPage> {
           SoundReportChart(
             stack: r.resonanceStack,
             pitch: r.pitch,
+            duration: r.duration,
           ),
         ],
       ),
