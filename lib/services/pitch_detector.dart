@@ -111,16 +111,17 @@ class PitchDetector {
     return '$note$octave';
   }
 
-  /// 将频率归一化到 C3-C5 范围 (0.0=C3, 1.0=C5)
+  /// 将频率归一化到 C2-C6 范围 (0.0=C2, 1.0=C6)
+  /// 覆盖人声全音域：男低音C2 ~ 女高音/假声C6
   static double freqToNormalized(double freq) {
-    // C3 = 130.81 Hz, C5 = 523.25 Hz
-    const c3 = 130.81;
-    const c5 = 523.25;
+    // C2 = 65.41 Hz, C6 = 1046.50 Hz
+    const c2 = 65.41;
+    const c6 = 1046.50;
     if (freq <= 0) return 0.0;
     final logF = log(freq);
-    final logC3 = log(c3);
-    final logC5 = log(c5);
-    final normalized = (logF - logC3) / (logC5 - logC3);
+    final logC2 = log(c2);
+    final logC6 = log(c6);
+    final normalized = (logF - logC2) / (logC6 - logC2);
     return normalized.clamp(0.0, 1.0);
   }
 }

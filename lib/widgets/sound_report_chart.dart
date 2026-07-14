@@ -97,10 +97,10 @@ class _ChartPainter extends CustomPainter {
           align: TextAlign.right, vcenter: true);
     }
 
-    // Y 轴右标签（音名）
-    const noteLabels = ['C5', 'C4', 'C3'];
+    // Y 轴右标签（音名）— C2-C6 每个八度一个刻度
+    const noteLabels = ['C6', 'C5', 'C4', 'C3', 'C2'];
     for (var i = 0; i < noteLabels.length; i++) {
-      final y = top + plotH * (i / 2);
+      final y = top + plotH * (i / (noteLabels.length - 1));
       _drawText(canvas, noteLabels[i], Offset(right + 4, y), labelStyle,
           align: TextAlign.left, vcenter: true);
     }
