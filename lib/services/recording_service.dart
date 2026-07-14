@@ -67,8 +67,9 @@ class RecordingService {
 
     if (path == null) return null;
 
-    // 分析音频
+    // 分析音频（返回 null 表示录音无效：太短或静音）
     final analysis = await AudioAnalysisService.analyze(path);
+    if (analysis == null) return null;
 
     final now = DateTime.now();
     final dateLabel =

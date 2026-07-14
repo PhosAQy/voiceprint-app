@@ -1,13 +1,29 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'github_config.dart';
 
-/// App 当前版本（与 pubspec.yaml 的 version 保持一致）
+/// App 当前版本 — 启动时从 PackageInfo 自动读取，与 pubspec.yaml 的 version 保持同步
 class AppVersion {
-  static const String current = '1.0.0';
+  /// 兜底默认值（init 完成前使用）
+  static String current = '1.0.0';
+
+  static bool _initialized = false;
+
+  /// 在 main() 中调用，从系统读取真实版本号
+  static Future<void> init() async {
+    if (_initialized) return;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      current = info.version;
+    } catch (_) {
+      // 读取失败时保留默认值
+    }
+    _initialized = true;
+  }
 }
 
 /// 最新 Release 信息
@@ -73,8 +89,6 @@ class UpdateService {
       url,
       headers: {
         'Accept': 'application/vnd.github+json',
-        if (GithubConfig.hasToken)
-          'Authorization': 'Bearer ${GithubConfig.token}',
       },
     );
 

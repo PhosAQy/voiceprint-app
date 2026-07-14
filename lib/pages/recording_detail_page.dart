@@ -3,10 +3,8 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/recording.dart';
-import '../services/github_config.dart';
 import '../services/playback_service.dart';
 import '../services/recording_service.dart';
-import '../services/recording_upload_service.dart';
 import '../theme/tokens.dart';
 import '../widgets/sound_report_chart.dart';
 import '../widgets/waveform_overview.dart';
@@ -36,7 +34,6 @@ class _RecordingDetailPageState extends State<RecordingDetailPage> {
   bool _isPlaying = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
-  bool _isUploading = false;
 
   @override
   void initState() {
@@ -103,61 +100,6 @@ class _RecordingDetailPageState extends State<RecordingDetailPage> {
         ),
       );
     }
-  }
-
-  void _uploadRecording() async {
-    await GithubConfig.load();
-    if (!GithubConfig.hasToken) {
-      if (!mounted) return;
-      showCupertinoDialog<void>(
-        context: context,
-        builder: (ctx) => CupertinoAlertDialog(
-          title: const Text('未配置 Token'),
-          content: const Text('请先在「设置」页填写 GitHub Personal Access Token，再上传录音。'),
-          actions: [
-            CupertinoDialogAction(
-              isDefaultAction: true,
-              child: const Text('好'),
-              onPressed: () => Navigator.pop(ctx),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    setState(() => _isUploading = true);
-    final result = await RecordingUploadService.upload(widget.recording.filePath);
-    if (mounted) setState(() => _isUploading = false);
-
-    if (!mounted) return;
-    showCupertinoDialog<void>(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: Text(result.success ? '上传成功' : '上传失败'),
-        content: Text(
-          result.success
-              ? '录音已上传到 GitHub 仓库 recordings/ 目录。'
-              : (result.error ?? '未知错误'),
-          style: const TextStyle(fontSize: 13),
-        ),
-        actions: [
-          if (result.success && result.downloadUrl != null)
-            CupertinoDialogAction(
-              child: const Text('复制链接'),
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: result.downloadUrl!));
-                Navigator.pop(ctx);
-              },
-            ),
-          CupertinoDialogAction(
-            isDefaultAction: true,
-            child: const Text('好'),
-            onPressed: () => Navigator.pop(ctx),
-          ),
-        ],
-      ),
-    );
   }
 
   void _deleteRecording() {
@@ -260,12 +202,6 @@ class _RecordingDetailPageState extends State<RecordingDetailPage> {
                         ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 12),
-                  _ActionButton(
-                    label: _isUploading ? '上传中...' : '上传到 GitHub',
-                    primary: false,
-                    onTap: _isUploading ? () {} : _uploadRecording,
                   ),
                 ],
               ),

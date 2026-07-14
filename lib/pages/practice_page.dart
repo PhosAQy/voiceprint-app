@@ -1,12 +1,13 @@
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import '../services/ear_monitor_service.dart';
 import '../services/recording_service.dart';
 import '../theme/tokens.dart';
 import '../widgets/vp_controls.dart';
 import '../widgets/vp_record_button.dart';
 
-/// 练习页 — 实时耳返设置 + 真实录音
+/// 练习页 — 实时耳返 + 真实录音
 class PracticePage extends StatefulWidget {
   final VoidCallback onRecordingComplete;
   final VoidCallback onOpenRecordings;
@@ -24,14 +25,15 @@ class PracticePage extends StatefulWidget {
 class _PracticePageState extends State<PracticePage>
     with TickerProviderStateMixin {
   final RecordingService _recordingService = RecordingService();
+  final EarMonitorService _earMonitor = EarMonitorService();
 
   bool _isRecording = false;
   bool _isAnalyzing = false;
   Duration _recordDuration = Duration.zero;
   Timer? _timer;
 
-  // 耳返设置
-  bool _earOn = true;
+  // 耳返设置（默认关闭）
+  bool _earOn = false;
   int _reverbIndex = 1;
   int _micIndex = 1;
   double _dryWet = 0.30;
@@ -45,6 +47,7 @@ class _PracticePageState extends State<PracticePage>
   @override
   void dispose() {
     _timer?.cancel();
+    _earMonitor.dispose();
     super.dispose();
   }
 
@@ -52,6 +55,24 @@ class _PracticePageState extends State<PracticePage>
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$m:$s';
+  }
+
+  /// 切换耳返开关
+  void _onEarToggle(bool v) async {
+    if (v) {
+      // 开启耳返 — 启动实时监听
+      final ok = await _earMonitor.start();
+      if (!mounted) return;
+      if (ok) {
+        setState(() => _earOn = true);
+      } else {
+        _showPermissionDialog();
+      }
+    } else {
+      // 关闭耳返
+      await _earMonitor.stop();
+      if (mounted) setState(() => _earOn = false);
+    }
   }
 
   void _onRecordTap() async {
@@ -65,22 +86,40 @@ class _PracticePageState extends State<PracticePage>
         _isAnalyzing = true;
       });
 
+      // 录音前先停止耳返（释放麦克风）
+      if (_earOn) {
+        await _earMonitor.stop();
+      }
+
       final recording = await _recordingService.stop();
+
+      // 录音完成后恢复耳返
+      if (_earOn && mounted) {
+        await _earMonitor.start();
+      }
 
       if (mounted) {
         setState(() => _isAnalyzing = false);
         if (recording != null) {
           widget.onRecordingComplete();
         } else {
-          _showMessage('录音太短，无法分析');
+          _showMessage('录音无效：太短或未检测到声音，请靠近麦克风重试');
         }
       }
     } else {
-      // 开始录音
+      // 开始录音前先停止耳返（释放麦克风）
+      if (_earOn) {
+        await _earMonitor.stop();
+      }
+
       final started = await _recordingService.start();
       if (!mounted) return;
 
       if (!started) {
+        // 录音失败，恢复耳返
+        if (_earOn) {
+          await _earMonitor.start();
+        }
         _showPermissionDialog();
         return;
       }
@@ -114,7 +153,6 @@ class _PracticePageState extends State<PracticePage>
             child: const Text('去设置'),
             onPressed: () {
               Navigator.pop(ctx);
-              // 跳转到系统设置（简化处理）
             },
           ),
         ],
@@ -184,7 +222,6 @@ class _PracticePageState extends State<PracticePage>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // 脉冲红点
             TweenAnimationBuilder<double>(
               tween: Tween(begin: 0.8, end: 1.3),
               duration: const Duration(milliseconds: 800),
@@ -221,7 +258,6 @@ class _PracticePageState extends State<PracticePage>
               ),
             ),
             const SizedBox(height: 40),
-            // 停止按钮
             GestureDetector(
               onTap: _onRecordTap,
               child: Container(
@@ -291,6 +327,15 @@ class _PracticePageState extends State<PracticePage>
   }
 
   Widget _buildEarCard() {
+    // 耳返关闭时只显示开关 + 提示；打开时显示全部设置
+    if (!_earOn) {
+      return VpCard(
+        sections: [
+          _buildEarHeader(),
+        ],
+      );
+    }
+
     return VpCard(
       sections: [
         _buildEarHeader(),
@@ -317,12 +362,11 @@ class _PracticePageState extends State<PracticePage>
                 letterSpacing: -0.02,
               ),
             ),
-            VpToggle(value: _earOn, onChanged: (v) => setState(() => _earOn = v)),
+            VpToggle(value: _earOn, onChanged: _onEarToggle),
           ],
         ),
-        AnimatedCrossFade(
-          firstChild: const SizedBox(height: 0),
-          secondChild: Container(
+        if (!_earOn)
+          Container(
             margin: const EdgeInsets.only(top: 14),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -341,10 +385,28 @@ class _PracticePageState extends State<PracticePage>
                 ),
               ],
             ),
+          )
+        else
+          Container(
+            margin: const EdgeInsets.only(top: 14),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: VpTokens.primary50,
+              borderRadius: BorderRadius.circular(VpTokens.radiusMd),
+            ),
+            child: const Row(
+              children: [
+                Icon(CupertinoIcons.speaker_2_fill, size: 18, color: VpTokens.primary),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '耳返已开启 · 正在实时监听',
+                    style: TextStyle(fontSize: 13, color: VpTokens.primary),
+                  ),
+                ),
+              ],
+            ),
           ),
-          crossFadeState: _earOn ? CrossFadeState.showFirst : CrossFadeState.showSecond,
-          duration: const Duration(milliseconds: 200),
-        ),
       ],
     );
   }

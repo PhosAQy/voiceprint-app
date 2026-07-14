@@ -19,6 +19,14 @@ class PitchDetector {
     final tauMax = (buffer.length / 2).floor();
     if (tauMax < 2) return null;
 
+    // 0. RMS 能量预检 — 静音/极低音量直接跳过，避免在噪声中产生虚假音高
+    var sumSq = 0.0;
+    for (var i = 0; i < buffer.length; i++) {
+      sumSq += buffer[i] * buffer[i];
+    }
+    final rms = sqrt(sumSq / buffer.length);
+    if (rms < 0.01) return null; // 归一化后 RMS < 0.01 视为静音
+
     // 1. 差分函数
     final diff = Float64List(tauMax);
     for (var tau = 0; tau < tauMax; tau++) {

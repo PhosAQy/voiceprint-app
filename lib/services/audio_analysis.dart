@@ -32,12 +32,17 @@ class AudioAnalysisService {
   static const int _fftSize = 2048;
   static const int _pitchSize = 1024;
 
-  /// 分析 WAV 文件
-  static Future<AudioAnalysisResult> analyze(String wavFilePath) async {
+  /// 分析 WAV 文件。返回 null 表示录音无效（太短或静音）
+  static Future<AudioAnalysisResult?> analyze(String wavFilePath) async {
     final wav = await WavReader.read(wavFilePath);
     final samples = wav.samples;
     final sampleRate = wav.sampleRate;
     final duration = wav.duration;
+
+    // 0. 整体 RMS 检测 — 太短或整体静音直接拒绝
+    if (samples.length < sampleRate * 0.3) return null; // < 0.3 秒
+    final overallRms = _rms(samples);
+    if (overallRms < 0.005) return null; // 整体静音
 
     // 1. 提取波形缩略图
     final waveform = _extractWaveform(samples, _thumbnailSamples);
@@ -46,7 +51,6 @@ class AudioAnalysisService {
     // 2. 分段分析
     final segmentLength = (samples.length / _segmentCount).floor();
     if (segmentLength < _fftSize) {
-      // 音频太短，用 fallback
       return _fallbackResult(duration);
     }
 
@@ -62,12 +66,20 @@ class AudioAnalysisService {
       // 提取本段数据
       final segLen = end - start;
       if (segLen < _fftSize) {
-        resonanceStack.add([0.4, 0.2, 0.2, 0.2]);
-        pitchValues.add(0.5);
+        resonanceStack.add([0, 0, 0, 0]);
+        pitchValues.add(0.0);
         continue;
       }
 
       final segment = Float64List.sublistView(samples, start, end);
+
+      // 分段 RMS 预检 — 静音段直接填零，不进行无意义分析
+      final segRms = _rms(segment);
+      if (segRms < 0.01) {
+        resonanceStack.add([0, 0, 0, 0]);
+        pitchValues.add(0.0);
+        continue;
+      }
 
       // 音高检测 — 取段中间的 _pitchSize 个样本
       final pitchStart = (segLen - _pitchSize) ~/ 2;
@@ -92,7 +104,7 @@ class AudioAnalysisService {
               pitches.reduce((a, b) => a + b) / pitches.length;
           pitchValues.add(PitchDetector.freqToNormalized(avgFreq));
         } else {
-          pitchValues.add(0.5); // 无声段，默认中间值
+          pitchValues.add(0.0); // 检测不到音高，归零（不再用 0.5/C4）
         }
       }
 
@@ -111,6 +123,16 @@ class AudioAnalysisService {
       pitch: pitchValues,
       duration: duration,
     );
+  }
+
+  /// 计算 RMS（均方根）能量
+  static double _rms(Float64List samples) {
+    if (samples.isEmpty) return 0;
+    var sumSq = 0.0;
+    for (var i = 0; i < samples.length; i++) {
+      sumSq += samples[i] * samples[i];
+    }
+    return sqrt(sumSq / samples.length);
   }
 
   /// 从 PCM 采样提取波形（取绝对值最大值归一化）
@@ -171,28 +193,15 @@ class AudioAnalysisService {
     ];
   }
 
-  /// 音频太短时的 fallback
+  /// 音频太短时的 fallback — 全零
   static AudioAnalysisResult _fallbackResult(Duration duration) {
-    final rng = _SeededRng(42);
     return AudioAnalysisResult(
-      waveform: List.generate(
-          _thumbnailSamples, (_) => 0.3 + rng.nextDouble() * 0.5),
-      overviewWaveform: List.generate(
-          _overviewSamples, (_) => 0.2 + rng.nextDouble() * 0.6),
+      waveform: List.filled(_thumbnailSamples, 0.0),
+      overviewWaveform: List.filled(_overviewSamples, 0.0),
       resonanceStack: List.generate(
-          _segmentCount, (_) => [0.4, 0.25, 0.2, 0.15]),
-      pitch: List.generate(_segmentCount, (_) => 0.5),
+          _segmentCount, (_) => [0.0, 0.0, 0.0, 0.0]),
+      pitch: List.filled(_segmentCount, 0.0),
       duration: duration,
     );
-  }
-}
-
-class _SeededRng {
-  int _state;
-  _SeededRng(int seed) : _state = seed.abs() + 1;
-
-  double nextDouble() {
-    _state = (_state * 1103515245 + 12345) & 0x7FFFFFFF;
-    return _state / 0x7FFFFFFF;
   }
 }

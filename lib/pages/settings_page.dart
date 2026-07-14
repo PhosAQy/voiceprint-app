@@ -6,7 +6,7 @@ import '../services/update_service.dart';
 import '../theme/tokens.dart';
 import '../widgets/vp_controls.dart';
 
-/// 设置页 — GitHub 配置 + 检查更新
+/// 设置页 — 检查更新 + 仓库配置
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
@@ -15,7 +15,6 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  final _tokenCtrl = TextEditingController();
   final _ownerCtrl = TextEditingController();
   final _repoCtrl = TextEditingController();
 
@@ -32,7 +31,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadConfig() async {
     await GithubConfig.load();
-    _tokenCtrl.text = GithubConfig.token ?? '';
     _ownerCtrl.text = GithubConfig.owner;
     _repoCtrl.text = GithubConfig.repo;
     if (mounted) setState(() {});
@@ -40,7 +38,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _saveConfig() async {
     await GithubConfig.save(
-      token: _tokenCtrl.text.trim(),
       owner: _ownerCtrl.text.trim().isEmpty
           ? GithubConfig.defaultOwner
           : _ownerCtrl.text.trim(),
@@ -91,7 +88,6 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final path = await UpdateService.downloadApk(_release!.apkDownloadUrl!);
       if (mounted) setState(() => _downloading = false);
-      // 调用系统安装器
       await OpenFilex.open(path);
     } catch (e) {
       if (mounted) {
@@ -108,7 +104,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
-    _tokenCtrl.dispose();
     _ownerCtrl.dispose();
     _repoCtrl.dispose();
     super.dispose();
@@ -130,7 +125,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 children: [
                   _buildUpdateCard(),
                   const SizedBox(height: 12),
-                  _buildGithubCard(),
+                  _buildRepoCard(),
                 ],
               ),
             ),
@@ -313,14 +308,14 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildGithubCard() {
+  Widget _buildRepoCard() {
     return VpCard(
       sections: [
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'GitHub 配置',
+              '更新源配置',
               style: TextStyle(
                 fontSize: 17,
                 fontWeight: VpTokens.wSemibold,
@@ -329,7 +324,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 4),
             const Text(
-              '用于上传录音和检测更新。Token 需有 repo 权限。',
+              '配置 GitHub 仓库地址，用于检测 App 更新',
               style: TextStyle(
                 fontSize: 13,
                 color: VpTokens.textSecondary,
@@ -343,43 +338,13 @@ class _SettingsPageState extends State<SettingsPage> {
             _buildLabel('仓库名'),
             const SizedBox(height: 6),
             _buildTextField(_repoCtrl, '如 voiceprint-app'),
-            const SizedBox(height: 14),
-            _buildLabel('Personal Access Token'),
-            const SizedBox(height: 6),
-            _buildTextField(_tokenCtrl, 'ghp_xxx...', obscure: true),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: CupertinoButton(
-                    color: VpTokens.primary,
-                    onPressed: _saveConfig,
-                    child: const Text('保存配置'),
-                  ),
-                ),
-                if (GithubConfig.hasToken) ...[
-                  const SizedBox(width: 12),
-                  CupertinoButton(
-                    color: VpTokens.surfaceTertiary,
-                    onPressed: () async {
-                      await GithubConfig.clearToken();
-                      _tokenCtrl.clear();
-                      if (mounted) setState(() {});
-                    },
-                    child: const Text(
-                      '清除 Token',
-                      style: TextStyle(color: VpTokens.error),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Token 创建地址: github.com/settings/tokens',
-              style: TextStyle(
-                fontSize: 11,
-                color: VpTokens.textTertiary,
+            SizedBox(
+              width: double.infinity,
+              child: CupertinoButton(
+                color: VpTokens.primary,
+                onPressed: _saveConfig,
+                child: const Text('保存配置'),
               ),
             ),
           ],
@@ -401,12 +366,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildTextField(
     TextEditingController ctrl,
-    String hint, {
-    bool obscure = false,
-  }) {
+    String hint,
+  ) {
     return CupertinoTextField(
       controller: ctrl,
-      obscureText: obscure,
       placeholder: hint,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
