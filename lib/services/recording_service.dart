@@ -104,6 +104,61 @@ class RecordingService {
   /// 获取所有录音
   Future<List<Recording>> getAllRecordings() => _db.getAll();
 
+  /// 导入本地音频文件 — 复制到 App 目录 + 分析 + 入库
+  /// 返回 null 表示导入失败或文件无效
+  Future<Recording?> importFile(String srcPath) async {
+    final srcFile = File(srcPath);
+    if (!await srcFile.exists()) return null;
+
+    // 复制到 App recordings 目录
+    final dir = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
+    if (!await recordingsDir.exists()) {
+      await recordingsDir.create(recursive: true);
+    }
+
+    final now = DateTime.now();
+    final fileName = 'rec_${now.millisecondsSinceEpoch}.wav';
+    final destPath = p.join(recordingsDir.path, fileName);
+    await srcFile.copy(destPath);
+
+    // 分析音频
+    final analysis = await AudioAnalysisService.analyze(destPath);
+    if (analysis == null) {
+      // 分析失败，删除已复制的文件
+      await File(destPath).delete();
+      return null;
+    }
+
+    final dateLabel =
+        '${now.month.toString().padLeft(2, '0')}.${now.day.toString().padLeft(2, '0')} '
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final recording = Recording(
+      filePath: destPath,
+      dateTimeLabel: dateLabel,
+      duration: analysis.duration,
+      waveform: analysis.waveform,
+      overviewWaveform: analysis.overviewWaveform,
+      resonanceStack: analysis.resonanceStack,
+      pitch: analysis.pitch,
+      createdAt: now.millisecondsSinceEpoch,
+    );
+
+    final id = await _db.insert(recording);
+    return Recording(
+      id: id,
+      filePath: recording.filePath,
+      dateTimeLabel: recording.dateTimeLabel,
+      duration: recording.duration,
+      waveform: recording.waveform,
+      overviewWaveform: recording.overviewWaveform,
+      resonanceStack: recording.resonanceStack,
+      pitch: recording.pitch,
+      createdAt: recording.createdAt,
+    );
+  }
+
   /// 删除录音
   Future<void> deleteRecording(int id) => _db.delete(id);
 

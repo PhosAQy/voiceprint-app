@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../models/recording.dart';
@@ -27,6 +28,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   List<Recording> _all = [];
   List<Recording> _visible = [];
   bool _loading = true;
+  bool _importing = false;
   static const int _pageSize = 6;
 
   @override
@@ -60,6 +62,40 @@ class _RecordingsPageState extends State<RecordingsPage> {
       final next = _all.skip(_visible.length).take(_pageSize).toList();
       _visible.addAll(next);
     });
+  }
+
+  Future<void> _importFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.audio,
+      allowMultiple: false,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final filePath = result.files.single.path;
+    if (filePath == null) return;
+
+    setState(() => _importing = true);
+
+    final recording = await _service.importFile(filePath);
+
+    if (mounted) {
+      setState(() => _importing = false);
+      if (recording != null) {
+        _loadRecordings();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('导入成功'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('导入失败：文件无效或格式不支持'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -129,25 +165,46 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Widget _buildHeader(int total) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          const Text(
-            '录音记录',
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: VpTokens.wSemibold,
-              color: VpTokens.textPrimary,
-              letterSpacing: -0.02,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '录音记录',
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: VpTokens.wSemibold,
+                    color: VpTokens.textPrimary,
+                    letterSpacing: -0.02,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '共 $total 次录音',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: VpTokens.textSecondary,
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            '共 $total 次录音',
-            style: const TextStyle(
-              fontSize: 13,
-              color: VpTokens.textSecondary,
-            ),
+          CupertinoButton(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            color: VpTokens.primary,
+            onPressed: _importing ? null : _importFile,
+            child: _importing
+                ? const CupertinoActivityIndicator(color: Colors.white)
+                : const Text(
+                    '导入文件',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: VpTokens.wMedium,
+                    ),
+                  ),
           ),
         ],
       ),
@@ -182,7 +239,20 @@ class _RecordingsPageState extends State<RecordingsPage> {
           CupertinoButton(
             color: VpTokens.primary,
             onPressed: widget.onOpenPractice,
-            child: const Text('去录音'),
+            child: const Text(
+              '去录音',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+          const SizedBox(height: 12),
+          CupertinoButton(
+            onPressed: _importing ? null : _importFile,
+            child: _importing
+                ? const CupertinoActivityIndicator()
+                : const Text(
+                    '导入本地录音文件',
+                    style: TextStyle(color: VpTokens.primary),
+                  ),
           ),
         ],
       ),

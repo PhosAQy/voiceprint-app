@@ -1,12 +1,11 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
-import '../services/github_config.dart';
 import '../services/update_service.dart';
 import '../theme/tokens.dart';
 import '../widgets/vp_controls.dart';
 
-/// 设置页 — 检查更新 + 仓库配置
+/// 设置页 — 检查更新（GitHub 仓库地址内置，无需配置）
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
@@ -15,45 +14,10 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  final _ownerCtrl = TextEditingController();
-  final _repoCtrl = TextEditingController();
-
   bool _checking = false;
   ReleaseInfo? _release;
   String? _checkError;
   bool _downloading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadConfig();
-  }
-
-  Future<void> _loadConfig() async {
-    await GithubConfig.load();
-    _ownerCtrl.text = GithubConfig.owner;
-    _repoCtrl.text = GithubConfig.repo;
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _saveConfig() async {
-    await GithubConfig.save(
-      owner: _ownerCtrl.text.trim().isEmpty
-          ? GithubConfig.defaultOwner
-          : _ownerCtrl.text.trim(),
-      repo: _repoCtrl.text.trim().isEmpty
-          ? GithubConfig.defaultRepo
-          : _repoCtrl.text.trim(),
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('配置已保存'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
 
   Future<void> _checkUpdate() async {
     setState(() {
@@ -103,13 +67,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   @override
-  void dispose() {
-    _ownerCtrl.dispose();
-    _repoCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: VpTokens.bg,
@@ -124,8 +81,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
                 children: [
                   _buildUpdateCard(),
-                  const SizedBox(height: 12),
-                  _buildRepoCard(),
                 ],
               ),
             ),
@@ -182,7 +137,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 onPressed: _checking ? null : _checkUpdate,
                 child: _checking
                     ? const CupertinoActivityIndicator(color: Colors.white)
-                    : const Text('检查更新'),
+                    : const Text(
+                        '检查更新',
+                        style: TextStyle(color: Colors.white),
+                      ),
               ),
             ),
             if (_checkError != null) ...[
@@ -296,89 +254,20 @@ class _SettingsPageState extends State<SettingsPage> {
                         children: [
                           CupertinoActivityIndicator(color: Colors.white),
                           SizedBox(width: 8),
-                          Text('下载中...'),
+                          Text(
+                            '下载中...',
+                            style: TextStyle(color: Colors.white),
+                          ),
                         ],
                       )
-                    : const Text('下载并安装'),
+                    : const Text(
+                        '下载并安装',
+                        style: TextStyle(color: Colors.white),
+                      ),
               ),
             ),
           ],
         ],
-      ),
-    );
-  }
-
-  Widget _buildRepoCard() {
-    return VpCard(
-      sections: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              '更新源配置',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: VpTokens.wSemibold,
-                color: VpTokens.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              '配置 GitHub 仓库地址，用于检测 App 更新',
-              style: TextStyle(
-                fontSize: 13,
-                color: VpTokens.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 16),
-            _buildLabel('仓库 Owner'),
-            const SizedBox(height: 6),
-            _buildTextField(_ownerCtrl, '如 PhosAQy'),
-            const SizedBox(height: 14),
-            _buildLabel('仓库名'),
-            const SizedBox(height: 6),
-            _buildTextField(_repoCtrl, '如 voiceprint-app'),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: CupertinoButton(
-                color: VpTokens.primary,
-                onPressed: _saveConfig,
-                child: const Text('保存配置'),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLabel(String text) {
-    return Text(
-      text,
-      style: const TextStyle(
-        fontSize: 13,
-        fontWeight: VpTokens.wMedium,
-        color: VpTokens.textSecondary,
-      ),
-    );
-  }
-
-  Widget _buildTextField(
-    TextEditingController ctrl,
-    String hint,
-  ) {
-    return CupertinoTextField(
-      controller: ctrl,
-      placeholder: hint,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: VpTokens.surfaceTertiary,
-        borderRadius: BorderRadius.circular(VpTokens.radiusMd),
-      ),
-      style: const TextStyle(
-        fontSize: 15,
-        color: VpTokens.textPrimary,
       ),
     );
   }

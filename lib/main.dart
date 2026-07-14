@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'pages/home_page.dart';
-import 'services/github_config.dart';
 import 'services/playback_service.dart';
 import 'services/update_service.dart';
 import 'theme/app_theme.dart';
@@ -11,8 +10,6 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 初始化播放服务
   PlaybackService().init();
-  // 预加载 GitHub 配置
-  await GithubConfig.load();
   // 从系统读取真实版本号（与 pubspec.yaml version 同步）
   await AppVersion.init();
   // 让状态栏与导航栏透明，与设计稿的 iOS 全屏观感对齐

@@ -80,7 +80,6 @@ class UpdateService {
 
   /// 查询最新 Release
   static Future<ReleaseInfo?> checkLatest() async {
-    await GithubConfig.load();
     final owner = GithubConfig.owner;
     final repo = GithubConfig.repo;
     final url = Uri.parse('$_apiBase/repos/$owner/$repo/releases/latest');
