@@ -10,7 +10,9 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaRecorder
+import android.media.AudioAttributes
 import android.os.Bundle
+import android.os.Process
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.ActivityCompat
@@ -35,8 +37,8 @@ class MainActivity : FlutterActivity() {
     private var isMonitoring = false
     private val handler = Handler(Looper.getMainLooper())
 
-    // 耳返音频参数 — 44.1kHz 单声道 16bit
-    private val sampleRate = 44100
+    // 耳返音频参数 — 用设备原生采样率避免重采样延迟
+    private var sampleRate = 48000
     private val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
     private val channelConfigOut = AudioFormat.CHANNEL_OUT_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
@@ -131,57 +133,71 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startMonitoring() {
-        // 低延迟：用最小 buffer，强制 128 样本（~2.9ms @ 44.1kHz）
+        // 1. 查询设备原生采样率，避免系统重采样带来的延迟
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        val nativeRate = am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull()
+        if (nativeRate != null && nativeRate > 0) {
+            sampleRate = nativeRate
+        }
+
+        // 2. 计算最小缓冲（LOW_LATENCY 模式下系统会返回较小值）
         val minBufIn = AudioRecord.getMinBufferSize(sampleRate, channelConfigIn, audioFormat)
         val minBufOut = AudioTrack.getMinBufferSize(sampleRate, channelConfigOut, audioFormat)
-        // 目标 buffer：128 样本，但不小于系统最小值
-        val targetFrames = 128
-        val bufferSize = maxOf(minBufIn, minBufOut, targetFrames * 2) // 字节
 
         try {
-            // 用小 buffer + VOICE_COMMUNICATION 源实现低延迟（~3ms/128帧）
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                sampleRate,
-                channelConfigIn,
-                audioFormat,
-                bufferSize
-            )
-            audioTrack = AudioTrack(
-                AudioManager.STREAM_VOICE_CALL,
-                sampleRate,
-                channelConfigOut,
-                audioFormat,
-                bufferSize,
-                AudioTrack.MODE_STREAM
-            )
-            // API 26+ 启用低延迟模式（运行时反射，避免编译期依赖）
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                try {
-                    val m = AudioRecord::class.java.getMethod("setPerformanceMode", Int::class.javaPrimitiveType)
-                    m.invoke(audioRecord, 1) // PERFORMANCE_MODE_LOW_LATENCY = 1
-                    val m2 = AudioTrack::class.java.getMethod("setPerformanceMode", Int::class.javaPrimitiveType)
-                    m2.invoke(audioTrack, 1)
-                } catch (_: Exception) {}
-            }
+            // 3. AudioRecord.Builder — VOICE_COMMUNICATION 源 + 最小缓冲
+            //    (AudioRecord.Builder 没有 setPerformanceMode，用 VOICE_COMMUNICATION 源本身已是低延迟)
+            audioRecord = AudioRecord.Builder()
+                .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(channelConfigIn)
+                        .setEncoding(audioFormat)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBufIn)
+                .build()
+
+            // 4. AudioTrack.Builder + LOW_LATENCY + VOICE_COMMUNICATION 用途
+            //    buffer 设为最小值，保证播放缓冲最小 → 稳态延迟最低
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(channelConfigOut)
+                        .setEncoding(audioFormat)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBufOut)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
             audioTrack?.setVolume(1.0f)
         } catch (e: Exception) {
             return
         }
 
-        // 初始化 DSP 处理器
+        // 5. 初始化 DSP 处理器（用实际采样率）
         val dspInst = DspPipeline(sampleRate)
         dsp = dspInst
-        // 应用初始 EQ
         dspInst.updateEq(dspParams.eqLow, dspParams.eqMid, dspParams.eqHigh)
 
         isMonitoring = true
         audioRecord?.startRecording()
         audioTrack?.play()
 
+        // 6. 每次处理 64 帧（~1.3ms @ 48kHz），最小化端到端延迟
+        val frameSize = 64
         monitorThread = Thread {
-            // 每次处理 128 帧（~2.9ms），保证低延迟
-            val frameSize = targetFrames
+            // 提升线程优先级到音频紧急级，减少调度延迟
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             val buffer = ShortArray(frameSize)
             val processed = FloatArray(frameSize)
             while (isMonitoring) {
@@ -200,7 +216,8 @@ class MainActivity : FlutterActivity() {
                             val v = (processed[i] * 32767.0f).toInt().coerceIn(-32768, 32767)
                             buffer[i] = v.toShort()
                         }
-                        audioTrack?.write(buffer, 0, read)
+                        // 非阻塞写入（WRITE_NON_BLOCKING），防止累积延迟
+                        audioTrack?.write(buffer, 0, read, AudioTrack.WRITE_NON_BLOCKING)
                     }
                 } catch (e: Exception) {
                     break

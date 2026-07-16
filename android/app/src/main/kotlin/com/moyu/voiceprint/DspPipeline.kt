@@ -48,13 +48,14 @@ class DspPipeline(private val sampleRate: Int) {
     private val eqHighShelf = Biquad(sampleRate)  // 高频 shelf @ 4000Hz
 
     // ---- Schroeder 混响 ----
-    // 4 个并联 comb filter（延迟时间互质，单位：样本）
-    // @ 44.1kHz: 1427, 1601, 1811, 1973（经典 Schroeder 值）
-    private val combDelays = intArrayOf(1427, 1601, 1811, 1973)
-    private val combs = Array(4) { CombFilter(combDelays[it]) }
-    // 2 个串联 allpass filter
-    private val allpassDelays = intArrayOf(396, 660)
-    private val allpasses = Array(2) { AllpassFilter(allpassDelays[it]) }
+    // 4 个并联 comb filter，延迟时间互质（ms）
+    // 经典 Schroeder 值 @ 44.1kHz: 1427/1601/1811/1973 样本
+    // 按实际采样率缩放，保证延迟时间不变
+    private val combDelaysMs = doubleArrayOf(32.3, 36.3, 41.1, 44.7)
+    private val combs = Array(4) { CombFilter((combDelaysMs[it] * sampleRate / 1000).toInt()) }
+    // 2 个串联 allpass filter（ms）
+    private val allpassDelaysMs = doubleArrayOf(9.0, 15.0)
+    private val allpasses = Array(2) { AllpassFilter((allpassDelaysMs[it] * sampleRate / 1000).toInt()) }
 
     // ---- 预延迟缓冲 ----
     private val preDelayMax = sampleRate / 16 // 最大 62.5ms
